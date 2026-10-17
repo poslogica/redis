@@ -44,6 +44,29 @@ RUN apk upgrade --no-cache \
 
 COPY --from=build /out/bin/ /usr/local/bin/
 
+# Drop-in parity with the official image's docker-entrypoint.sh: started
+# without a config file, redis-server enables protected mode and refuses
+# every non-loopback client -- i.e. every other container. The official
+# entrypoint appends `--protected-mode no` in that case; so does this one
+# (unless the caller already set it). Network-level isolation (compose's
+# localhost-only port binding, k8s ClusterIP) is what keeps it private.
+COPY <<'EOF' /usr/local/bin/docker-entrypoint.sh
+#!/bin/sh
+set -e
+if [ "${1#-}" != "$1" ] || [ "${1%.conf}" != "$1" ]; then
+	set -- redis-server "$@"
+fi
+if [ "$1" = "redis-server" ]; then
+	case " $* " in
+		*" --protected-mode "*) ;;
+		*) set -- "$@" --protected-mode no ;;
+	esac
+fi
+exec "$@"
+EOF
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
+
 # Non-root from the start: the official image starts as root and drops to
 # redis via an entrypoint script, but SonicSort runs `redis-server` directly
 # and never needs root.
