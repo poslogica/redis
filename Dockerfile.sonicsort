@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# Source build of this fork's 7.4 line for SonicSort (poslogica/sonicsort),
+# which uses Redis for ephemeral state only (download job status, login
+# sessions, rate limits -- persistence deliberately off).
+#
+# Replaces the public redis:7-alpine, whose Alpine layer SonicSort's image
+# scan gate found carrying fixable openssl/zlib CVEs (3C/10H on the copy in
+# use; still 0C/4H on a fresh pull). Building from this repo instead of
+# layering on that image means:
+#   - the base is current Alpine, upgraded weekly (OS_PATCH_WEEK below), and
+#   - a Redis CVE can be patched here directly on the sonicsort/7.4 branch
+#     rather than waiting for a docker-library rebuild.
+#
+#   docker build -f Dockerfile.sonicsort -t sonicsort-redis:local .
+
+ARG ALPINE_VERSION=3.24
+
+FROM alpine:${ALPINE_VERSION} AS build
+
+RUN apk add --no-cache build-base linux-headers openssl-dev
+
+WORKDIR /src
+COPY . .
+
+# BUILD_TLS=yes links the system OpenSSL (patched via apk in the runtime
+# stage) rather than vendoring one. MALLOC=jemalloc uses deps/jemalloc,
+# matching the official image (`redis-server --version` reports
+# malloc=jemalloc-5.3.0 on both).
+RUN make -j"$(nproc)" BUILD_TLS=yes MALLOC=jemalloc USE_SYSTEMD=no \
+    && make install PREFIX=/out
+
+FROM alpine:${ALPINE_VERSION}
+
+# Weekly cache-buster for the upgrade below: SonicSort's build scripts pass
+# the current ISO week, so the layer is re-run at least weekly instead of
+# being served from BuildKit's cache forever.
+ARG OS_PATCH_WEEK=unset
+RUN apk upgrade --no-cache \
+    && apk add --no-cache libssl3 tzdata \
+    && addgroup -S -g 1000 redis \
+    && adduser -S -D -H -u 999 -G redis -h /data redis \
+    && mkdir /data && chown redis:redis /data
+
+COPY --from=build /out/bin/ /usr/local/bin/
+
+# Non-root from the start: the official image starts as root and drops to
+# redis via an entrypoint script, but SonicSort runs `redis-server` directly
+# and never needs root.
+USER redis
+WORKDIR /data
+EXPOSE 6379
+
+CMD ["redis-server"]
