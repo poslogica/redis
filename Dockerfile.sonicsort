@@ -14,9 +14,12 @@
 #
 #   docker build -f Dockerfile.sonicsort -t sonicsort-redis:local .
 
-ARG ALPINE_VERSION=3.24
+# Alpine base for both stages. SonicSort passes sonicsort-alpine:local -- its own
+# Alpine 3.24, assembled from Alpine's signed packages by poslogica/docker-alpine;
+# the default is the public image of the same release.
+ARG ALPINE_BASE=alpine:3.24
 
-FROM alpine:${ALPINE_VERSION} AS build
+FROM ${ALPINE_BASE} AS build
 
 RUN apk add --no-cache build-base linux-headers openssl-dev
 
@@ -30,7 +33,7 @@ COPY . .
 RUN make -j"$(nproc)" BUILD_TLS=yes MALLOC=jemalloc USE_SYSTEMD=no \
     && make install PREFIX=/out
 
-FROM alpine:${ALPINE_VERSION}
+FROM ${ALPINE_BASE}
 
 # Weekly cache-buster for the upgrade below: SonicSort's build scripts pass
 # the current ISO week, so the layer is re-run at least weekly instead of
